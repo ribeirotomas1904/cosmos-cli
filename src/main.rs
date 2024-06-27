@@ -1,46 +1,44 @@
-use std::{fs, str::FromStr};
+use std::str::FromStr;
 
+use anyhow::Context;
 use clap::Parser;
-use cosmos::{Address, AddressHrp, Coin, CosmosNetwork, SeedPhrase};
-use regex::Regex;
+use cosmos::{Address, AddressHrp, CosmosNetwork, ParsedCoin, SeedPhrase};
 
 #[derive(Parser)]
 struct Args {
     coin: String,
     address: String,
+
+    #[arg(long = "cosmos-wallet", env = "COSMOS_WALLET")]
+    cosmos_wallet: String,
 }
 
 #[tokio::main]
-async fn main() {
+async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
 
-    let address = Address::from_str(&args.address).unwrap();
+    let parsed_coin = ParsedCoin::from_str(&args.coin)
+        .with_context(|| format!("Invalid coin: {:?}", args.coin))?;
 
-    let coin_regex = Regex::new(r"^(\d+)([a-zA-z0-9/]+)$").unwrap();
+    let coins = vec![parsed_coin.into()];
 
-    let captures = coin_regex.captures(&args.coin).unwrap();
+    let address = Address::from_str(&args.address)
+        .with_context(|| format!("Invalid address: {:?}", args.address))?;
 
-    let amount = captures.get(1).unwrap().as_str();
-
-    let denom = captures.get(2).unwrap().as_str();
-
-    let coin = Coin {
-        denom: denom.to_owned(),
-        amount: amount.to_owned(),
-    };
-
-    let coins = vec![coin];
-
-    let cosmos = CosmosNetwork::OsmosisTestnet.connect().await.unwrap();
-
-    let secret = fs::read_to_string("./secret").unwrap();
-
-    let wallet = SeedPhrase::from_str(secret.trim())
-        .unwrap()
+    let wallet = SeedPhrase::from_str(&args.cosmos_wallet)
+        .with_context(|| format!("Invalid cosmos wallet: {:?}", args.cosmos_wallet))?
         .with_hrp(AddressHrp::from_static("osmo"))
-        .unwrap();
+        .with_context(|| "Invalid address HRP".to_string())?;
 
-    let result = wallet.send_coins(&cosmos, address, coins).await.unwrap();
+    let cosmos = CosmosNetwork::OsmosisTestnet
+        .connect()
+        .await
+        .with_context(|| "Failed to connect to the Osmosis testnet".to_string())?;
 
-    println!("{}", result.txhash);
+    let result = wallet
+        .send_coins(&cosmos, address, coins)
+        .await
+        .with_context(|| "Failed to send coins".to_string())?;
+
+    Ok(println!("Transaction hash: {}", result.txhash))
 }
